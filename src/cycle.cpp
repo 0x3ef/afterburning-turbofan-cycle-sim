@@ -23,6 +23,9 @@ constexpr double bypass_recovery = 0.97;
 constexpr double shaft_efficiency = 0.99;
 constexpr double mixer_recovery = 0.98;
 constexpr double dry_augmentor_recovery = 0.98;
+constexpr double augmentor_efficiency = 0.95;
+constexpr double stoichiometric_fuel_air_ratio = 0.068;
+constexpr double reheat_loss_coefficient = 3.0;
 constexpr std::array grid{0.65, 1.0, 1.35};
 constexpr double exponent = (gamma - 1.0) / gamma;
 
@@ -150,7 +153,8 @@ double corrected_speed_fraction(double speed_fraction, TotalState in, double des
     return speed_fraction * std::sqrt(design_temperature / in.temperature);
 }
 
-DryResult evaluate(const Fixture& data, const DryCase& point, const detail::Vector& x) {
+CycleResult evaluate(const Fixture& data, const WetCase& commands, const detail::Vector& x) {
+    const DryCase& point = commands.base;
     const auto [flow_fraction, split, fan_line, compressor_line, hp_expansion,
                 lp_expansion, lp_speed, hp_speed] = x;
     if (!(0.0 < split && split < 1.0) || !(lp_speed > 0.0 && hp_speed > 0.0)) {
@@ -183,9 +187,16 @@ DryResult evaluate(const Fixture& data, const DryCase& point, const detail::Vect
     const double core_pressure = subsonic_static(lp_exit, data.core_mixer_area).pressure;
     const double bypass_pressure = subsonic_static(bypass, data.bypass_mixer_area).pressure;
     const auto mixed = mix(lp_exit, bypass, mixer_recovery);
-    auto dry_exit = mixed;
-    dry_exit.pressure *= dry_augmentor_recovery;
-    const double capacity = nozzle_capacity(dry_exit, point.throat_area, point.ambient_pressure);
+    const double augmentor_far = commands.augmentor_fuel_flow / station2.mass_flow;
+    const double augmentor_recovery = dry_augmentor_recovery *
+        std::exp(-reheat_loss_coefficient * augmentor_far);
+    const auto augmentor_exit = augment(mixed, station2.mass_flow, point.fuel_flow,
+                                        commands.augmentor_fuel_flow, heating_value,
+                                        augmentor_efficiency, augmentor_recovery,
+                                        stoichiometric_fuel_air_ratio);
+    const auto nozzle = convergent_divergent_nozzle(augmentor_exit, point.throat_area,
+                                                    commands.exit_area, point.ambient_pressure);
+    const double capacity = nozzle.mass_flow_capacity;
     const double lp_net = -shaft_efficiency * power(hp_exit, lp_exit) - power(station2, fan_exit);
     const double hp_net = -shaft_efficiency * power(burner_exit, hp_exit) - power(core, compressor_exit);
     const detail::Vector residuals{
@@ -194,7 +205,7 @@ DryResult evaluate(const Fixture& data, const DryCase& point, const detail::Vect
         (corrected_flow(burner_exit) - hpt.corrected_flow) / corrected_flow(burner_exit),
         (corrected_flow(hp_exit) - lpt.corrected_flow) / corrected_flow(hp_exit),
         (core_pressure - bypass_pressure) / reference_pressure,
-        (dry_exit.mass_flow - capacity) / inlet_flow,
+        (augmentor_exit.mass_flow - capacity) / inlet_flow,
         hp_net / data.hp_power_scale,
         lp_net / data.lp_power_scale,
     };
@@ -214,11 +225,11 @@ DryResult evaluate(const Fixture& data, const DryCase& point, const detail::Vect
         Station{"lp_turbine_exit", lp_exit, core_fuel_air_ratio},
         Station{"bypass_duct_exit", bypass, 0.0},
         Station{"mixer_exit", mixed, mixed_fuel_air_ratio},
-        Station{"nozzle_inlet", dry_exit, mixed_fuel_air_ratio},
+        Station{"nozzle_inlet", augmentor_exit, mixed_fuel_air_ratio + augmentor_far},
     };
 
     return {stations, lp_speed * lp_rpm, hp_speed * hp_rpm, split, core_pressure,
-            bypass_pressure, capacity, lp_net, hp_net, residuals, 0, false};
+            bypass_pressure, capacity, lp_net, hp_net, residuals, 0, false, nozzle};
 }
 
 }  // namespace
@@ -234,7 +245,17 @@ DryCase synthetic_off_design_case() {
     return point;
 }
 
+WetCase synthetic_wet_case() {
+    auto base = synthetic_design_case();
+    base.throat_area *= 1.10;
+    return {base, 0.22, 1.20 * base.throat_area};
+}
+
 DryResult solve_synthetic_dry(DryCase operating_point) {
+    return solve_synthetic_wet({operating_point, 0.0, operating_point.throat_area});
+}
+
+CycleResult solve_synthetic_wet(WetCase operating_point) {
     const auto& data = fixture();
     const detail::Vector initial{1.0, bypass_fraction, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
     const auto matching = detail::match(

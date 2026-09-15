@@ -29,6 +29,12 @@ TotalState expand(TotalState in, double pressure_ratio, double efficiency);
 TotalState burn(TotalState in, double fuel_flow, double heating_value, double efficiency,
                 double recovery);
 
+// The fuel-air limit assumes complete mixing and uses the sum of both fuel flows.
+// This lumped check does not resolve local oxygen availability or combustion stability.
+TotalState augment(TotalState in, double air_mass_flow, double upstream_fuel_flow,
+                   double augmentor_fuel_flow, double heating_value, double efficiency,
+                   double recovery, double stoichiometric_fuel_air_ratio);
+
 // The mixed total pressure is the lower inlet total pressure times recovery.
 // Static pressure compatibility at the mixer entry is a separate matching constraint.
 TotalState mix(TotalState core, TotalState bypass, double recovery);

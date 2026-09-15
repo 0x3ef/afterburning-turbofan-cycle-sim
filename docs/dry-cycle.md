@@ -14,7 +14,7 @@ ctest --test-dir build --output-on-failure
 ./build/turbofan-cli off-design > off-design.csv
 ```
 
-The CLI writes CSV to standard output and diagnostic information to standard error. The nine station rows report total pressure in Pa, total temperature in K, gas mass flow in kg/s, sensible total enthalpy in J/kg, and the metered fuel-to-air mass ratio. The fuel ratio tracks supplied fuel mass for bookkeeping. It is independent of the calorically perfect gas properties and gives no species prediction. Diagnostics identify each scaled residual, the converged spool speeds and split, and the number of accepted Newton steps. A failed match produces a nonzero exit code and no station CSV.
+The CLI writes CSV to standard output and diagnostic information to standard error. For the added reheat case and exit diagnostics, see [the wet cycle guide](wet-cycle.md). The nine station rows report total pressure in Pa, total temperature in K, gas mass flow in kg/s, sensible total enthalpy in J/kg, and the metered fuel-to-air mass ratio. The fuel ratio tracks supplied fuel mass for bookkeeping. It is independent of the calorically perfect gas properties and gives no species prediction. Diagnostics identify each scaled residual, the converged spool speeds and split, and the number of accepted Newton steps. A failed match produces a nonzero exit code and no station CSV.
 
 ## Gas path and matching
 
@@ -33,4 +33,4 @@ CTest checks independent component relations, including subsonic inversion and n
 | Design | 90.000 | 9,000 | 14,000 | 0.4300 |
 | Off-design | 90.008 | 8,638 | 13,752 | 0.4532 |
 
-Variant calibration, external map loading, variable gas properties, cooling and bleed streams, wet operation, nozzle exit states and DEEC dynamics remain future steps. The NASA Technical Reports Server returned a connection-proxy 403 during the calibration search. No PW-100 component map tables or CCD 1148.0 data were verified. [NASA TM 84903 catalog entry](https://ntrs.nasa.gov/citations/19840006076)
+Variant calibration, external map loading, variable gas properties, cooling and bleed streams, and DEEC dynamics remain future steps. The NASA Technical Reports Server returned a connection-proxy 403 during the calibration search. No PW-100 component map tables or CCD 1148.0 data were verified. [NASA TM 84903 catalog entry](https://ntrs.nasa.gov/citations/19840006076)

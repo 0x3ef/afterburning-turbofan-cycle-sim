@@ -105,6 +105,34 @@ TotalState burn(TotalState in, double fuel_flow, double heating_value, double ef
     return checked({in.pressure * recovery, temperature, mass_flow});
 }
 
+TotalState augment(TotalState in, double air_mass_flow, double upstream_fuel_flow,
+                   double augmentor_fuel_flow, double heating_value, double efficiency,
+                   double recovery, double stoichiometric_fuel_air_ratio) {
+    checked(in);
+    require_positive(air_mass_flow, "augmentor air mass flow must be finite and positive");
+    require_nonnegative(upstream_fuel_flow, "upstream fuel flow must be finite and nonnegative");
+    require_nonnegative(augmentor_fuel_flow, "augmentor fuel flow must be finite and nonnegative");
+    require_positive(stoichiometric_fuel_air_ratio,
+                     "stoichiometric fuel-air ratio must be finite and positive");
+
+    const double inlet_mass_flow = air_mass_flow + upstream_fuel_flow;
+    constexpr double mass_tolerance = 16.0 * std::numeric_limits<double>::epsilon();
+    if (!std::isfinite(inlet_mass_flow) ||
+        std::abs(in.mass_flow - inlet_mass_flow) / std::max(in.mass_flow, inlet_mass_flow) >
+            mass_tolerance) {
+        throw std::domain_error("augmentor inlet mass flow must match air plus upstream fuel");
+    }
+
+    if (augmentor_fuel_flow > 0.0) {
+        const double fuel_remaining =
+            std::fma(stoichiometric_fuel_air_ratio, air_mass_flow, -upstream_fuel_flow);
+        if (augmentor_fuel_flow > fuel_remaining) {
+            throw std::domain_error("augmentor fuel exceeds the remaining fuel-air allocation");
+        }
+    }
+    return burn(in, augmentor_fuel_flow, heating_value, efficiency, recovery);
+}
+
 TotalState mix(TotalState core, TotalState bypass, double recovery) {
     checked(core);
     checked(bypass);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "turbofan/nozzle.hpp"
 #include "turbofan/thermo.hpp"
 
 #include <array>
@@ -16,13 +17,19 @@ struct DryCase {
     double throat_area;
 };
 
+struct WetCase {
+    DryCase base;
+    double augmentor_fuel_flow;
+    double exit_area;
+};
+
 struct Station {
     std::string_view name;
     TotalState total;
     double fuel_air_ratio;
 };
 
-struct DryResult {
+struct CycleResult {
     std::array<Station, 9> stations;
     double lp_speed_rpm;
     double hp_speed_rpm;
@@ -35,10 +42,15 @@ struct DryResult {
     std::array<double, 8> scaled_residuals;
     int iterations;
     bool converged;
+    NozzleResult nozzle;
 };
+
+using DryResult = CycleResult;
 
 DryCase synthetic_design_case();
 DryCase synthetic_off_design_case();
+WetCase synthetic_wet_case();
 DryResult solve_synthetic_dry(DryCase operating_point);
+CycleResult solve_synthetic_wet(WetCase operating_point);
 
 }  // namespace turbofan

@@ -82,6 +82,56 @@ void test_heat_and_mixing() {
          1e-8, "mixer energy balance");
 }
 
+void test_augmentor() {
+    const turbofan::TotalState in{220000.0, 850.0, 32.5};
+    constexpr double air = 32.0;
+    constexpr double upstream_fuel = 0.5;
+    constexpr double max_ratio = 0.0625;
+    constexpr double lhv = 43e6;
+    constexpr double efficiency = 0.92;
+    constexpr double wet_fuel = 1.5;
+
+    const auto dry = turbofan::augment(in, air, upstream_fuel, 0.0, lhv, efficiency, 0.98,
+                                       max_ratio);
+    near(dry.pressure, in.pressure * 0.98, 1e-8, "dry augmentor pressure recovery");
+    near(dry.temperature, in.temperature, 0.0, "dry augmentor preserves temperature");
+    near(dry.mass_flow, in.mass_flow, 0.0, "dry augmentor preserves mass flow");
+
+    const auto wet = turbofan::augment(in, air, upstream_fuel, wet_fuel, lhv, efficiency, 0.95,
+                                       max_ratio);
+    near(wet.pressure, in.pressure * 0.95, 1e-8, "wet augmentor pressure recovery");
+    near(wet.mass_flow, in.mass_flow + wet_fuel, 0.0, "wet augmentor adds fuel mass");
+    near(wet.mass_flow * turbofan::cp * wet.temperature,
+         in.mass_flow * turbofan::cp * in.temperature + wet_fuel * lhv * efficiency,
+         1e-7, "wet augmentor conserves energy");
+
+    constexpr double fuel_above_limit = 2.5;
+    const auto dry_rich_inlet =
+        turbofan::augment({in.pressure, in.temperature, air + fuel_above_limit}, air,
+                         fuel_above_limit, 0.0, lhv, efficiency, 0.98, max_ratio);
+    near(dry_rich_inlet.temperature, in.temperature, 0.0,
+         "dry augmentor permits any consistent upstream fuel");
+
+    expect_domain_error(
+        [&] { turbofan::augment(in, air, upstream_fuel, 1.6, lhv, efficiency, 0.95, max_ratio); },
+        "augmentor ignored upstream fuel in the fuel-air limit");
+    expect_domain_error(
+        [&] { turbofan::augment(in, air - 1.0, upstream_fuel, 0.0, lhv, efficiency, 0.95, max_ratio); },
+        "augmentor accepted inconsistent inlet mass accounting");
+    expect_domain_error(
+        [&] { turbofan::augment(in, 0.0, upstream_fuel, 0.0, lhv, efficiency, 0.95, max_ratio); },
+        "augmentor accepted zero air mass flow");
+    expect_domain_error(
+        [&] { turbofan::augment(in, air, -0.1, 0.0, lhv, efficiency, 0.95, max_ratio); },
+        "augmentor accepted negative upstream fuel flow");
+    expect_domain_error(
+        [&] { turbofan::augment(in, air, upstream_fuel, -0.1, lhv, efficiency, 0.95, max_ratio); },
+        "augmentor accepted negative augmentor fuel flow");
+    expect_domain_error(
+        [&] { turbofan::augment(in, air, upstream_fuel, wet_fuel, lhv, efficiency, 0.95, 0.0); },
+        "augmentor accepted a zero stoichiometric fuel-air ratio");
+}
+
 void test_static_and_nozzle() {
     const turbofan::TotalState upstream{200000.0, 600.0, 5.0};
     const double area = 0.06;
@@ -140,6 +190,7 @@ int main() {
         test_inlet();
         test_turbomachinery();
         test_heat_and_mixing();
+        test_augmentor();
         test_static_and_nozzle();
         test_invalid_inputs();
     } catch (const std::exception& error) {
