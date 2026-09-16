@@ -2,8 +2,10 @@
 
 #include <array>
 #include <exception>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
 
 namespace {
@@ -23,19 +25,46 @@ std::string_view regime_name(turbofan::NozzleRegime regime) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    const std::string_view mode = argc == 2 ? argv[1] : "";
-    if (mode != "design" && mode != "off-design" && mode != "wet") {
-        std::cerr << "Usage: turbofan-cli design|off-design|wet\n";
+    const std::string_view mode = argc >= 2 ? argv[1] : "";
+    const bool export_maps = mode == "export-maps" && argc == 2;
+    const bool use_external_maps = argc == 4 && std::string_view(argv[2]) == "--maps";
+    const bool run_cycle = (mode == "design" || mode == "off-design" || mode == "wet") &&
+                           (argc == 2 || use_external_maps);
+    if (!run_cycle && !export_maps) {
+        std::cerr << "Usage: turbofan-cli design|off-design|wet [--maps FILE]\n"
+                     "       turbofan-cli export-maps\n";
         return 2;
     }
 
     try {
+        if (export_maps) {
+            turbofan::write_map_dataset(std::cout, turbofan::synthetic_map_dataset());
+            return 0;
+        }
         const bool wet = mode == "wet";
-        const std::string_view model = wet ? "synthetic-mixed-flow-wet" : "synthetic-mixed-flow-dry";
-        const auto result = wet
-            ? turbofan::solve_synthetic_wet(turbofan::synthetic_wet_case())
-            : turbofan::solve_synthetic_dry(mode == "design" ? turbofan::synthetic_design_case()
-                                                             : turbofan::synthetic_off_design_case());
+        const std::string_view model = use_external_maps ? "external-maps-synthetic-geometry"
+            : wet ? "synthetic-mixed-flow-wet" : "synthetic-mixed-flow-dry";
+        const auto point = [&] {
+            if (wet) {
+                return turbofan::synthetic_wet_case();
+            }
+            const auto dry = mode == "design" ? turbofan::synthetic_design_case()
+                                               : turbofan::synthetic_off_design_case();
+            return turbofan::WetCase{dry, 0.0, dry.throat_area};
+        }();
+        const auto result = [&] {
+            if (!use_external_maps) {
+                return turbofan::solve_synthetic_wet(point);
+            }
+            std::ifstream file(argv[3]);
+            if (!file) {
+                throw std::runtime_error("Unable to open the component map file");
+            }
+            const auto maps = turbofan::load_map_dataset(file);
+            std::cerr << "map_variant=" << std::quoted(maps.variant)
+                      << " map_provenance=" << std::quoted(maps.provenance) << '\n';
+            return turbofan::solve_with_synthetic_geometry(point, maps);
+        }();
         const std::array residual_names{
             "fan_flow", "compressor_flow", "hp_turbine_flow", "lp_turbine_flow",
             "mixer_pressure", "nozzle_capacity", "hp_shaft_power", "lp_shaft_power",

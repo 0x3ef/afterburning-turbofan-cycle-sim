@@ -33,4 +33,6 @@ CTest checks independent component relations, including subsonic inversion and n
 | Design | 90.000 | 9,000 | 14,000 | 0.4300 |
 | Off-design | 90.008 | 8,638 | 13,752 | 0.4532 |
 
-Variant calibration, external map loading, variable gas properties, cooling and bleed streams, and DEEC dynamics remain future steps. The NASA Technical Reports Server returned a connection-proxy 403 during the calibration search. No PW-100 component map tables or CCD 1148.0 data were verified. [NASA TM 84903 catalog entry](https://ntrs.nasa.gov/citations/19840006076)
+Variant calibration, variable gas properties, cooling and bleed streams, and DEEC dynamics remain future steps. The NASA Technical Reports Server returned a connection-proxy 403 during the calibration search. No PW-100 component map tables or CCD 1148.0 data were verified. [NASA TM 84903 catalog entry](https://ntrs.nasa.gov/citations/19840006076)
+
+See [component map datasets](component-maps.md) for exporting the built-in grid or supplying a file.

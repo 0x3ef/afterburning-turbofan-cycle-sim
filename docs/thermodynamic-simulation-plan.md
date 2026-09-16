@@ -1,6 +1,6 @@
 # Thermodynamic simulation plan
 
-**Status:** Steady [dry](dry-cycle.md) and [lumped wet](wet-cycle.md) milestones implemented with synthetic data.
+**Status:** Steady [dry](dry-cycle.md) and [lumped wet](wet-cycle.md) milestones implemented with synthetic data. [External rectilinear map loading](component-maps.md) is available with synthetic geometry and initial conditions.
 
 **Target:** An offline C++20 simulator for the station-by-station thermodynamic states of a twin-spool, mixed-flow, afterburning turbofan. The first reference configuration is the F100-PW-100 DEEC test engine described by Myers. The F100 EMD/PW-1128 is a separate configuration and a secondary source of qualitative behavior.
 

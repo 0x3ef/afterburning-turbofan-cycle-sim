@@ -3,7 +3,9 @@
 #include <cmath>
 #include <exception>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 
@@ -52,6 +54,67 @@ void verify_balances(const turbofan::DryResult& result, double fuel_flow, double
                 hpt.total.temperature > lpt.total.temperature &&
                 nozzle.total.pressure < mixer.total.pressure,
             "Station changes must follow the flow path");
+}
+
+void verify_external_maps() {
+    const auto point = turbofan::synthetic_wet_case();
+    const auto reference = turbofan::solve_synthetic_wet(point);
+    const auto& originals = turbofan::synthetic_map_dataset();
+    std::stringstream file;
+    turbofan::write_map_dataset(file, originals);
+    auto imported = turbofan::load_map_dataset(file);
+    require(imported.variant == originals.variant && imported.provenance == originals.provenance,
+            "Map provenance must survive export and import");
+    const auto imported_result = turbofan::solve_with_synthetic_geometry(point, imported);
+    verify_balances(imported_result, point.base.fuel_flow, point.augmentor_fuel_flow);
+    require(close(imported_result.lp_speed_rpm, reference.lp_speed_rpm, 1e-7),
+            "Round-tripped maps must reproduce the built-in cycle");
+
+    // Change correction conventions while preserving the physical map.
+    const double temperature_factor = 300.0 / originals.reference_temperature;
+    const double pressure_factor = 100000.0 / originals.reference_pressure;
+    const auto rereference = [&](const turbofan::PerformanceMap& map) {
+        auto samples = map.samples();
+        for (auto& sample : samples) {
+            sample.corrected_speed *= std::sqrt(temperature_factor);
+            sample.point.corrected_flow *= pressure_factor / std::sqrt(temperature_factor);
+        }
+        return turbofan::PerformanceMap(std::move(samples));
+    };
+    imported.reference_temperature = 300.0;
+    imported.reference_pressure = 100000.0;
+    imported.fan = rereference(imported.fan);
+    imported.compressor = rereference(imported.compressor);
+    imported.hp_turbine = rereference(imported.hp_turbine);
+    imported.lp_turbine = rereference(imported.lp_turbine);
+    const auto rereferenced = turbofan::solve_with_synthetic_geometry(point, imported);
+    verify_balances(rereferenced, point.base.fuel_flow, point.augmentor_fuel_flow);
+    require(close(rereferenced.hp_speed_rpm, reference.hp_speed_rpm, 1e-7),
+            "Equivalent correction references must reproduce the physical cycle");
+
+    auto modified_fan = imported.fan.samples();
+    for (auto& sample : modified_fan) {
+        sample.point.pressure_ratio *= 1.001;
+    }
+    imported.fan = turbofan::PerformanceMap(std::move(modified_fan));
+    const auto modified = turbofan::solve_with_synthetic_geometry(point, imported);
+    verify_balances(modified, point.base.fuel_flow, point.augmentor_fuel_flow);
+    require(!close(modified.lp_speed_rpm, reference.lp_speed_rpm, 0.01),
+            "A changed input map must affect the matched cycle");
+
+    auto incompatible_fan = imported.fan.samples();
+    for (auto& sample : incompatible_fan) {
+        sample.corrected_speed *= 2.0;
+    }
+    imported.fan = turbofan::PerformanceMap(std::move(incompatible_fan));
+    try {
+        static_cast<void>(turbofan::solve_with_synthetic_geometry(point, imported));
+    } catch (const std::domain_error& error) {
+        require(std::string_view(error.what()).starts_with("Fan map"),
+                "A map domain error must identify the component");
+        return;
+    }
+    throw std::runtime_error("The solver accepted a map incompatible with the initial point");
 }
 
 }  // namespace
@@ -119,6 +182,7 @@ int main() {
             rejected = true;
         }
         require(rejected, "An overfueled augmentor case was accepted");
+        verify_external_maps();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
