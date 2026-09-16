@@ -22,17 +22,55 @@ std::string_view regime_name(turbofan::NozzleRegime regime) {
     return "unknown";
 }
 
+bool is_preset(std::string_view mode) {
+    return mode == "design" || mode == "off-design" || mode == "wet";
+}
+
+turbofan::WetCase preset(std::string_view mode) {
+    if (mode == "wet") {
+        return turbofan::synthetic_wet_case();
+    }
+    const auto dry = mode == "design" ? turbofan::synthetic_design_case()
+                                       : turbofan::synthetic_off_design_case();
+    return {dry, 0.0, dry.throat_area};
+}
+
+turbofan::MapDataset read_maps(const char* path) {
+    std::ifstream file(path);
+    if (!file) {
+        throw std::runtime_error("Unable to open the component map file");
+    }
+    auto maps = turbofan::load_map_dataset(file);
+    std::cerr << "map_variant=" << std::quoted(maps.variant)
+              << " map_provenance=" << std::quoted(maps.provenance) << '\n';
+    return maps;
+}
+
+turbofan::CycleSetup read_setup(const char* path) {
+    std::ifstream file(path);
+    if (!file) {
+        throw std::runtime_error("Unable to open the case file");
+    }
+    auto setup = turbofan::load_cycle_setup(file);
+    std::cerr << "engine_variant=" << std::quoted(setup.engine.variant)
+              << " engine_provenance=" << std::quoted(setup.engine.provenance) << '\n';
+    return setup;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
     const std::string_view mode = argc >= 2 ? argv[1] : "";
     const bool export_maps = mode == "export-maps" && argc == 2;
+    const bool export_case = mode == "export-case" && argc == 3 && is_preset(argv[2]);
+    const bool solve_case = mode == "solve-case" && argc == 4;
     const bool use_external_maps = argc == 4 && std::string_view(argv[2]) == "--maps";
-    const bool run_cycle = (mode == "design" || mode == "off-design" || mode == "wet") &&
-                           (argc == 2 || use_external_maps);
-    if (!run_cycle && !export_maps) {
+    const bool run_cycle = is_preset(mode) && (argc == 2 || use_external_maps);
+    if (!run_cycle && !export_maps && !export_case && !solve_case) {
         std::cerr << "Usage: turbofan-cli design|off-design|wet [--maps FILE]\n"
-                     "       turbofan-cli export-maps\n";
+                     "       turbofan-cli export-maps\n"
+                     "       turbofan-cli export-case design|off-design|wet\n"
+                     "       turbofan-cli solve-case CASE MAPS\n";
         return 2;
     }
 
@@ -41,29 +79,25 @@ int main(int argc, char* argv[]) {
             turbofan::write_map_dataset(std::cout, turbofan::synthetic_map_dataset());
             return 0;
         }
-        const bool wet = mode == "wet";
-        const std::string_view model = use_external_maps ? "external-maps-synthetic-geometry"
-            : wet ? "synthetic-mixed-flow-wet" : "synthetic-mixed-flow-dry";
-        const auto point = [&] {
-            if (wet) {
-                return turbofan::synthetic_wet_case();
-            }
-            const auto dry = mode == "design" ? turbofan::synthetic_design_case()
-                                               : turbofan::synthetic_off_design_case();
-            return turbofan::WetCase{dry, 0.0, dry.throat_area};
-        }();
+        if (export_case) {
+            turbofan::write_cycle_setup(std::cout, turbofan::synthetic_setup(preset(argv[2])));
+            return 0;
+        }
+        const std::string_view model = solve_case ? "configured-cycle"
+            : use_external_maps ? "external-maps-synthetic-geometry"
+            : mode == "wet" ? "synthetic-mixed-flow-wet" : "synthetic-mixed-flow-dry";
         const auto result = [&] {
-            if (!use_external_maps) {
-                return turbofan::solve_synthetic_wet(point);
+            if (solve_case) {
+                const auto setup = read_setup(argv[2]);
+                const auto maps = read_maps(argv[3]);
+                return turbofan::solve_steady(setup.point, setup.engine, maps, setup.seed);
             }
-            std::ifstream file(argv[3]);
-            if (!file) {
-                throw std::runtime_error("Unable to open the component map file");
+            const auto point = preset(mode);
+            if (use_external_maps) {
+                const auto maps = read_maps(argv[3]);
+                return turbofan::solve_with_synthetic_geometry(point, maps);
             }
-            const auto maps = turbofan::load_map_dataset(file);
-            std::cerr << "map_variant=" << std::quoted(maps.variant)
-                      << " map_provenance=" << std::quoted(maps.provenance) << '\n';
-            return turbofan::solve_with_synthetic_geometry(point, maps);
+            return turbofan::solve_synthetic_wet(point);
         }();
         const std::array residual_names{
             "fan_flow", "compressor_flow", "hp_turbine_flow", "lp_turbine_flow",

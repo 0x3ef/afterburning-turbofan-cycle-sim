@@ -10,28 +10,36 @@
 namespace turbofan::detail {
 namespace {
 
-constexpr std::size_t dimension = Vector{}.size();
 constexpr double tolerance = 1e-8;
 constexpr int max_iterations = 40;
 
-using Matrix = std::array<Vector, dimension>;
-using Evaluator = std::function<Vector(const Vector&)>;
+template <std::size_t dimension>
+using Values = std::array<double, dimension>;
 
-bool finite(const Vector& values)
+template <std::size_t dimension>
+using Matrix = std::array<Values<dimension>, dimension>;
+
+template <std::size_t dimension>
+using Evaluator = std::function<Values<dimension>(const Values<dimension>&)>;
+
+template <std::size_t dimension>
+bool finite(const Values<dimension>& values)
 {
     return std::all_of(values.begin(), values.end(), [](double value) {
         return std::isfinite(value);
     });
 }
 
-bool converged(const Vector& residuals)
+template <std::size_t dimension>
+bool converged(const Values<dimension>& residuals)
 {
     return std::all_of(residuals.begin(), residuals.end(), [](double residual) {
         return std::abs(residual) <= tolerance;
     });
 }
 
-double merit(const Vector& residuals)
+template <std::size_t dimension>
+double merit(const Values<dimension>& residuals)
 {
     double norm = 0.0;
     for (const double residual : residuals) {
@@ -40,14 +48,16 @@ double merit(const Vector& residuals)
     return norm;
 }
 
-std::optional<Vector> trial_residuals(const Evaluator& evaluate, const Vector& x)
+template <std::size_t dimension>
+std::optional<Values<dimension>> trial_residuals(const Evaluator<dimension>& evaluate,
+                                                const Values<dimension>& x)
 {
     if (!finite(x)) {
         return std::nullopt;
     }
 
     try {
-        Vector residuals = evaluate(x);
+        Values<dimension> residuals = evaluate(x);
         if (finite(residuals)) {
             return residuals;
         }
@@ -57,7 +67,9 @@ std::optional<Vector> trial_residuals(const Evaluator& evaluate, const Vector& x
     return std::nullopt;
 }
 
-bool differentiate(const Evaluator& evaluate, const MatchResult& current, Matrix& jacobian)
+template <std::size_t dimension>
+bool differentiate(const Evaluator<dimension>& evaluate, const BasicMatchResult<dimension>& current,
+                   Matrix<dimension>& jacobian)
 {
     for (std::size_t column = 0; column < dimension; ++column) {
         const double coordinate = current.x[column];
@@ -65,8 +77,8 @@ bool differentiate(const Evaluator& evaluate, const MatchResult& current, Matrix
         bool found = false;
 
         for (int attempt = 0; attempt < 5 && !found; ++attempt) {
-            Vector upper_point = current.x;
-            Vector lower_point = current.x;
+            Values<dimension> upper_point = current.x;
+            Values<dimension> lower_point = current.x;
             upper_point[column] += offset;
             lower_point[column] -= offset;
 
@@ -77,8 +89,8 @@ bool differentiate(const Evaluator& evaluate, const MatchResult& current, Matrix
                 continue;
             }
 
-            const Vector& upper_value = upper ? *upper : current.residuals;
-            const Vector& lower_value = lower ? *lower : current.residuals;
+            const Values<dimension>& upper_value = upper ? *upper : current.residuals;
+            const Values<dimension>& lower_value = lower ? *lower : current.residuals;
             const double upper_coordinate = upper ? upper_point[column] : coordinate;
             const double lower_coordinate = lower ? lower_point[column] : coordinate;
 
@@ -93,12 +105,13 @@ bool differentiate(const Evaluator& evaluate, const MatchResult& current, Matrix
         }
     }
 
-    return std::all_of(jacobian.begin(), jacobian.end(), finite);
+    return std::all_of(jacobian.begin(), jacobian.end(), finite<dimension>);
 }
 
-std::optional<Vector> solve_linear(Matrix matrix, Vector rhs)
+template <std::size_t dimension>
+std::optional<Values<dimension>> solve_linear(Matrix<dimension> matrix, Values<dimension> rhs)
 {
-    Vector row_scale{};
+    Values<dimension> row_scale{};
     for (std::size_t row = 0; row < dimension; ++row) {
         for (const double coefficient : matrix[row]) {
             row_scale[row] = std::max(row_scale[row], std::abs(coefficient));
@@ -135,7 +148,7 @@ std::optional<Vector> solve_linear(Matrix matrix, Vector rhs)
         }
     }
 
-    Vector step{};
+    Values<dimension> step{};
     for (std::size_t row = dimension; row-- > 0;) {
         double remainder = rhs[row];
         for (std::size_t k = row + 1; k < dimension; ++k) {
@@ -149,12 +162,14 @@ std::optional<Vector> solve_linear(Matrix matrix, Vector rhs)
     return step;
 }
 
-bool take_step(const Evaluator& evaluate, const Vector& step, MatchResult& current)
+template <std::size_t dimension>
+bool take_step(const Evaluator<dimension>& evaluate, const Values<dimension>& step,
+               BasicMatchResult<dimension>& current)
 {
     const double old_merit = merit(current.residuals);
     double damping = 1.0;
     for (int attempt = 0; attempt < 20; ++attempt) {
-        Vector trial{};
+        Values<dimension> trial{};
         for (std::size_t i = 0; i < dimension; ++i) {
             trial[i] = current.x[i] + damping * step[i];
         }
@@ -171,25 +186,24 @@ bool take_step(const Evaluator& evaluate, const Vector& step, MatchResult& curre
     return false;
 }
 
-} // namespace
-
-MatchResult match(const std::function<Vector(const Vector&)>& evaluate, Vector initial)
+template <std::size_t dimension>
+BasicMatchResult<dimension> run_match(const Evaluator<dimension>& evaluate, Values<dimension> initial)
 {
     if (!finite(initial)) {
         throw std::domain_error("matching initial variables must be finite");
     }
-    MatchResult result{initial, evaluate(initial), 0, false};
+    BasicMatchResult<dimension> result{initial, evaluate(initial), 0, false};
     if (!finite(result.residuals)) {
         throw std::domain_error("matching initial residuals must be finite");
     }
 
     while (!converged(result.residuals) && result.iterations < max_iterations) {
-        Matrix jacobian{};
+        Matrix<dimension> jacobian{};
         if (!differentiate(evaluate, result, jacobian)) {
             break;
         }
 
-        Vector rhs = result.residuals;
+        Values<dimension> rhs = result.residuals;
         for (double& residual : rhs) {
             residual = -residual;
         }
@@ -201,6 +215,19 @@ MatchResult match(const std::function<Vector(const Vector&)>& evaluate, Vector i
 
     result.converged = converged(result.residuals);
     return result;
+}
+
+} // namespace
+
+MatchResult match(const std::function<Vector(const Vector&)>& evaluate, Vector initial)
+{
+    return run_match(evaluate, initial);
+}
+
+FlowMatchResult match_flows(const std::function<FlowVector(const FlowVector&)>& evaluate,
+                            FlowVector initial)
+{
+    return run_match(evaluate, initial);
 }
 
 } // namespace turbofan::detail

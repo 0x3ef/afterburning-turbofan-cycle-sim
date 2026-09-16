@@ -6,6 +6,7 @@ add_library(turbofan
     src/nozzle.cpp
     src/performance_map.cpp
     src/map_dataset.cpp
+    src/engine_config.cpp
     src/matching.cpp
     src/cycle.cpp
 )
@@ -33,6 +34,10 @@ if(BUILD_TESTING)
     add_executable(map-dataset-test tests/map_dataset_test.cpp)
     target_link_libraries(map-dataset-test PRIVATE turbofan)
     add_test(NAME map-dataset COMMAND map-dataset-test)
+
+    add_executable(engine-config-test tests/engine_config_test.cpp)
+    target_link_libraries(engine-config-test PRIVATE turbofan)
+    add_test(NAME engine-config COMMAND engine-config-test)
 
     add_executable(cycle-test tests/cycle_test.cpp)
     target_link_libraries(cycle-test PRIVATE turbofan)

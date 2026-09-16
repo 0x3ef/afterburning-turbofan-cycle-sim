@@ -13,7 +13,7 @@ Build the executable using the [cycle build instructions](dry-cycle.md). Export 
 ./build/turbofan-cli wet --maps synthetic-maps.csv > wet.csv
 ```
 
-With `--maps`, the CLI reports the input variant and provenance on standard error and labels the results `external-maps-synthetic-geometry` in the station CSV. It uses the selected synthetic case's boundary conditions, flow areas, losses and initial operating point. Those assumptions can make a valid map file incompatible with the case. A rejected initial map query names the component, corrected speed, and coordinate. A complete variant calibration also requires independently supplied geometry, operating cases, initial guesses and validation data.
+With `--maps`, the CLI reports the input variant and provenance on standard error and labels the results `external-maps-synthetic-geometry` in the station CSV. It uses the selected synthetic case's boundary conditions, flow areas, losses and initial operating point. Those assumptions can make a valid map file incompatible with the case. A rejected initial map query names the component, corrected speed, and coordinate. To supply geometry, operating conditions and initial guesses as well, use [configured engine cases](engine-cases.md). Variant calibration still requires independent validation data.
 
 ## Version 1 format
 

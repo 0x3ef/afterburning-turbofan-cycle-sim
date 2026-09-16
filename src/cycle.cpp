@@ -35,12 +35,8 @@ constexpr double exponent = (gamma - 1.0) / gamma;
 struct Fixture {
     DryCase design;
     MapDataset maps;
-    double core_mixer_area;
-    double bypass_mixer_area;
-    double hp_expansion;
-    double lp_expansion;
-    double hp_power_scale;
-    double lp_power_scale;
+    EngineConfig engine;
+    CycleSeed seed;
 };
 
 double corrected_flow(TotalState state, double temperature_ref, double pressure_ref) {
@@ -129,7 +125,14 @@ Fixture make_fixture() {
                     synthetic_map(core, hp_rpm, 5.4, 0.86, false),
                     synthetic_map(burner_exit, hp_rpm, hp_ratio, 0.89, true),
                     synthetic_map(hp_exit, lp_rpm, lp_ratio, 0.90, true)};
-    return {design, std::move(maps), core_area, bypass_area, hp_ratio, lp_ratio, hp_load, lp_load};
+    EngineConfig engine{
+        "synthetic-mixed-flow", "Built-in reference cycle geometry and losses",
+        core_area, bypass_area, shaft_efficiency, bypass_recovery, mixer_recovery,
+        burner_recovery, dry_augmentor_recovery, heating_value, burner_efficiency,
+        augmentor_efficiency, stoichiometric_fuel_air_ratio, reheat_loss_coefficient, 12.0, 5.0,
+    };
+    CycleSeed seed{inlet_flow, bypass_fraction, 1.0, 1.0, hp_ratio, lp_ratio, lp_rpm, hp_rpm};
+    return {design, std::move(maps), std::move(engine), seed};
 }
 
 const Fixture& fixture() {
@@ -137,70 +140,82 @@ const Fixture& fixture() {
     return data;
 }
 
-CycleResult evaluate(const Fixture& data, const MapDataset& maps, const WetCase& commands,
-                     const detail::Vector& x) {
+CycleResult evaluate(const WetCase& commands, const EngineConfig& engine, const MapDataset& maps,
+                     const CycleSeed& initial, const detail::Vector& x) {
     const DryCase& point = commands.base;
-    const auto [flow_fraction, split, fan_line, compressor_line, hp_expansion,
-                lp_expansion, lp_speed, hp_speed] = x;
-    if (!(0.0 < split && split < 1.0) || !(lp_speed > 0.0 && hp_speed > 0.0)) {
+    const auto [flow_fraction, split, fan_offset, compressor_offset,
+                hp_ratio_fraction, lp_ratio_fraction, lp_speed_fraction, hp_speed_fraction] = x;
+    const CycleSeed state{
+        flow_fraction * initial.inlet_flow, split,
+        initial.fan_coordinate + (fan_offset - 1.0) * std::max(1.0, std::abs(initial.fan_coordinate)),
+        initial.compressor_coordinate +
+            (compressor_offset - 1.0) * std::max(1.0, std::abs(initial.compressor_coordinate)),
+        hp_ratio_fraction * initial.hp_expansion, lp_ratio_fraction * initial.lp_expansion,
+        lp_speed_fraction * initial.lp_speed_rpm, hp_speed_fraction * initial.hp_speed_rpm,
+    };
+    if (!(0.0 < split && split < 1.0) || !(state.lp_speed_rpm > 0.0 && state.hp_speed_rpm > 0.0)) {
         throw std::domain_error("Trial split or rotor speed is outside its physical domain");
     }
 
     const auto station2 = inlet(point.ambient_pressure, point.ambient_temperature,
-                                point.mach, point.inlet_recovery, flow_fraction * inlet_flow);
+                                point.mach, point.inlet_recovery, state.inlet_flow);
     const auto fan = lookup(maps.fan, "Fan",
-                            corrected_speed(lp_speed * lp_rpm, station2, maps.reference_temperature),
-                            fan_line);
+                            corrected_speed(state.lp_speed_rpm, station2, maps.reference_temperature),
+                            state.fan_coordinate);
     const auto fan_exit = compress(station2, fan.pressure_ratio, fan.efficiency);
     auto core = fan_exit;
     core.mass_flow *= 1.0 - split;
     auto bypass = fan_exit;
     bypass.mass_flow *= split;
-    bypass.pressure *= bypass_recovery;
+    bypass.pressure *= engine.bypass_recovery;
 
     const auto compressor = lookup(maps.compressor, "Compressor",
-                                   corrected_speed(hp_speed * hp_rpm, core, maps.reference_temperature),
-                                   compressor_line);
+                                   corrected_speed(state.hp_speed_rpm, core, maps.reference_temperature),
+                                   state.compressor_coordinate);
     const auto compressor_exit = compress(core, compressor.pressure_ratio, compressor.efficiency);
-    const auto burner_exit = burn(compressor_exit, point.fuel_flow, heating_value,
-                                  burner_efficiency, burner_recovery);
+    const auto burner_exit = burn(compressor_exit, point.fuel_flow, engine.heating_value,
+                                  engine.burner_efficiency, engine.burner_recovery);
     const auto hpt = lookup(maps.hp_turbine, "HP turbine",
-                            corrected_speed(hp_speed * hp_rpm, burner_exit, maps.reference_temperature),
-                            hp_expansion * data.hp_expansion);
+                            corrected_speed(state.hp_speed_rpm, burner_exit, maps.reference_temperature),
+                            state.hp_expansion);
     const auto hp_exit = expand(burner_exit, hpt.pressure_ratio, hpt.efficiency);
     const auto lpt = lookup(maps.lp_turbine, "LP turbine",
-                            corrected_speed(lp_speed * lp_rpm, hp_exit, maps.reference_temperature),
-                            lp_expansion * data.lp_expansion);
+                            corrected_speed(state.lp_speed_rpm, hp_exit, maps.reference_temperature),
+                            state.lp_expansion);
     const auto lp_exit = expand(hp_exit, lpt.pressure_ratio, lpt.efficiency);
 
-    const double core_pressure = subsonic_static(lp_exit, data.core_mixer_area).pressure;
-    const double bypass_pressure = subsonic_static(bypass, data.bypass_mixer_area).pressure;
-    const auto mixed = mix(lp_exit, bypass, mixer_recovery);
+    const double core_pressure = subsonic_static(lp_exit, engine.core_mixer_area).pressure;
+    const double bypass_pressure = subsonic_static(bypass, engine.bypass_mixer_area).pressure;
+    const auto mixed = mix(lp_exit, bypass, engine.mixer_recovery);
     const double augmentor_far = commands.augmentor_fuel_flow / station2.mass_flow;
-    const double augmentor_recovery = dry_augmentor_recovery *
-        std::exp(-reheat_loss_coefficient * augmentor_far);
+    const double augmentor_recovery = engine.dry_augmentor_recovery *
+        std::exp(-engine.reheat_loss_coefficient * augmentor_far);
     const auto augmentor_exit = augment(mixed, station2.mass_flow, point.fuel_flow,
-                                        commands.augmentor_fuel_flow, heating_value,
-                                        augmentor_efficiency, augmentor_recovery,
-                                        stoichiometric_fuel_air_ratio);
+                                        commands.augmentor_fuel_flow, engine.heating_value,
+                                        engine.augmentor_efficiency, augmentor_recovery,
+                                        engine.stoichiometric_fuel_air_ratio);
     const auto nozzle = convergent_divergent_nozzle(augmentor_exit, point.throat_area,
                                                     commands.exit_area, point.ambient_pressure);
     const double capacity = nozzle.mass_flow_capacity;
-    const double lp_net = -shaft_efficiency * power(hp_exit, lp_exit) - power(station2, fan_exit);
-    const double hp_net = -shaft_efficiency * power(burner_exit, hp_exit) - power(core, compressor_exit);
+    const double lp_net = -engine.shaft_efficiency * power(hp_exit, lp_exit) - power(station2, fan_exit);
+    const double hp_net = -engine.shaft_efficiency * power(burner_exit, hp_exit) - power(core, compressor_exit);
     const auto flow_residual = [&](TotalState in, MapPoint map) {
         const double trial_flow = corrected_flow(in, maps.reference_temperature, maps.reference_pressure);
         return (trial_flow - map.corrected_flow) / trial_flow;
     };
+    const double power_scale = initial.inlet_flow * cp * point.ambient_temperature;
+    if (!std::isfinite(power_scale) || power_scale <= 0.0) {
+        throw std::domain_error("Invalid shaft power residual scale");
+    }
     const detail::Vector residuals{
         flow_residual(station2, fan),
         flow_residual(core, compressor),
         flow_residual(burner_exit, hpt),
         flow_residual(hp_exit, lpt),
-        (core_pressure - bypass_pressure) / reference_pressure,
-        (augmentor_exit.mass_flow - capacity) / inlet_flow,
-        hp_net / data.hp_power_scale,
-        lp_net / data.lp_power_scale,
+        (core_pressure - bypass_pressure) / point.ambient_pressure,
+        (augmentor_exit.mass_flow - capacity) / initial.inlet_flow,
+        hp_net / power_scale,
+        lp_net / power_scale,
     };
 
     if (!std::all_of(residuals.begin(), residuals.end(), [](double r) { return std::isfinite(r); })) {
@@ -221,8 +236,8 @@ CycleResult evaluate(const Fixture& data, const MapDataset& maps, const WetCase&
         Station{"nozzle_inlet", augmentor_exit, mixed_fuel_air_ratio + augmentor_far},
     };
 
-    return {stations, lp_speed * lp_rpm, hp_speed * hp_rpm, split, core_pressure,
-            bypass_pressure, capacity, lp_net, hp_net, residuals, 0, false, nozzle};
+    return {stations, state.lp_speed_rpm, state.hp_speed_rpm, split, core_pressure,
+            bypass_pressure, capacity, lp_net, hp_net, residuals, 0, false, nozzle, state};
 }
 
 }  // namespace
@@ -244,6 +259,10 @@ WetCase synthetic_wet_case() {
     return {base, 0.22, 1.20 * base.throat_area};
 }
 
+CycleSetup synthetic_setup(WetCase operating_point) {
+    return {fixture().engine, operating_point, fixture().seed};
+}
+
 DryResult solve_synthetic_dry(DryCase operating_point) {
     return solve_synthetic_wet({operating_point, 0.0, operating_point.throat_area});
 }
@@ -256,17 +275,71 @@ const MapDataset& synthetic_map_dataset() {
     return fixture().maps;
 }
 
-CycleResult solve_with_synthetic_geometry(WetCase operating_point, const MapDataset& maps) {
+namespace {
+
+void validate_inputs(const WetCase& operating_point, const EngineConfig& engine,
+                     const MapDataset& maps, const CycleSeed& seed) {
+    try {
+        validate_cycle_setup({engine, operating_point, seed});
+    } catch (const std::invalid_argument& error) {
+        throw std::domain_error(error.what());
+    }
     if (!(std::isfinite(maps.reference_pressure) && maps.reference_pressure > 0.0) ||
         !(std::isfinite(maps.reference_temperature) && maps.reference_temperature > 0.0)) {
         throw std::invalid_argument("Map correction references must be finite and positive");
     }
-    const auto& data = fixture();
-    const detail::Vector initial{1.0, bypass_fraction, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+}
+
+CycleResult match_steady(const WetCase& operating_point, const EngineConfig& engine,
+                         const MapDataset& maps, const CycleSeed& seed) {
+    validate_inputs(operating_point, engine, maps, seed);
+    const detail::Vector initial{1.0, seed.bypass_fraction, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
     const auto matching = detail::match(
-        [&](const detail::Vector& x) { return evaluate(data, maps, operating_point, x).scaled_residuals; },
-        initial);
-    auto result = evaluate(data, maps, operating_point, matching.x);
+        [&](const detail::Vector& x) {
+            return evaluate(operating_point, engine, maps, seed, x).scaled_residuals;
+        }, initial);
+    auto result = evaluate(operating_point, engine, maps, seed, matching.x);
+    result.iterations = matching.iterations;
+    result.converged = matching.converged;
+    return result;
+}
+
+void require_variant(const EngineConfig& engine, const MapDataset& maps) {
+    if (engine.variant != maps.variant) {
+        throw std::invalid_argument("Engine configuration and component maps have different variants");
+    }
+}
+
+}  // namespace
+
+CycleResult solve_with_synthetic_geometry(WetCase operating_point, const MapDataset& maps) {
+    return match_steady(operating_point, fixture().engine, maps, fixture().seed);
+}
+
+CycleResult solve_steady(const WetCase& operating_point, const EngineConfig& engine,
+                         const MapDataset& maps, const CycleSeed& seed) {
+    require_variant(engine, maps);
+    return match_steady(operating_point, engine, maps, seed);
+}
+
+CycleResult solve_at_speeds(const WetCase& operating_point, const EngineConfig& engine,
+                            const MapDataset& maps, const CycleSeed& seed) {
+    require_variant(engine, maps);
+    validate_inputs(operating_point, engine, maps, seed);
+    const auto fixed_speed = [&](const detail::FlowVector& flow) {
+        const auto [mass, split, fan, compressor, hp, lp] = flow;
+        return evaluate(operating_point, engine, maps, seed,
+                        detail::Vector{mass, split, fan, compressor, hp, lp, 1.0, 1.0});
+    };
+    const detail::FlowVector initial{1.0, seed.bypass_fraction, 1.0, 1.0, 1.0, 1.0};
+    const auto matching = detail::match_flows(
+        [&](const detail::FlowVector& flow) {
+            const auto residuals = fixed_speed(flow).scaled_residuals;
+            detail::FlowVector result{};
+            std::copy_n(residuals.begin(), result.size(), result.begin());
+            return result;
+        }, initial);
+    auto result = fixed_speed(matching.x);
     result.iterations = matching.iterations;
     result.converged = matching.converged;
     return result;

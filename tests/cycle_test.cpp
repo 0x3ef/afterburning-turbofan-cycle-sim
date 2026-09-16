@@ -117,6 +117,44 @@ void verify_external_maps() {
     throw std::runtime_error("The solver accepted a map incompatible with the initial point");
 }
 
+void verify_configured_cycle() {
+    const auto point = turbofan::synthetic_wet_case();
+    const auto& maps = turbofan::synthetic_map_dataset();
+    const auto setup = turbofan::synthetic_setup(point);
+    std::stringstream file;
+    turbofan::write_cycle_setup(file, setup);
+    auto imported = turbofan::load_cycle_setup(file);
+    const auto trim = turbofan::solve_steady(imported.point, imported.engine, maps, imported.seed);
+    verify_balances(trim, point.base.fuel_flow, point.augmentor_fuel_flow);
+    require(imported.engine.variant == maps.variant &&
+                close(trim.lp_speed_rpm, turbofan::solve_synthetic_wet(point).lp_speed_rpm, 1e-7),
+            "Exported geometry must reproduce the synthetic preset");
+
+    imported.engine.bypass_mixer_area *= 1.01;
+    const auto changed = turbofan::solve_steady(imported.point, imported.engine, maps, trim.next_seed);
+    verify_balances(changed, point.base.fuel_flow, point.augmentor_fuel_flow);
+    require(!close(changed.bypass_fraction, trim.bypass_fraction, 1e-5),
+            "A geometry change must affect the cycle");
+
+    imported.point.base.fuel_flow *= 0.996;
+    const auto fixed = turbofan::solve_at_speeds(imported.point, imported.engine, maps, changed.next_seed);
+    require(fixed.converged && fixed.lp_speed_rpm == changed.lp_speed_rpm &&
+                fixed.hp_speed_rpm == changed.hp_speed_rpm &&
+                std::abs(fixed.hp_net_power) > 1.0,
+            "A fixed-speed flow match must preserve speed and expose shaft imbalance");
+    for (std::size_t index = 0; index < 6; ++index) {
+        require(close(fixed.scaled_residuals[index], 0.0, 1e-8), "Fixed-speed flow mismatch");
+    }
+
+    imported.engine.variant = "unmatched";
+    try {
+        static_cast<void>(turbofan::solve_steady(imported.point, imported.engine, maps, imported.seed));
+    } catch (const std::invalid_argument&) {
+        return;
+    }
+    throw std::runtime_error("The solver accepted mismatched variant identifiers");
+}
+
 }  // namespace
 
 int main() {
@@ -183,6 +221,7 @@ int main() {
         }
         require(rejected, "An overfueled augmentor case was accepted");
         verify_external_maps();
+        verify_configured_cycle();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
