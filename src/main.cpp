@@ -1,12 +1,19 @@
+#include "turbofan/actuator.hpp"
+#include "turbofan/controller.hpp"
 #include "turbofan/cycle.hpp"
+#include "turbofan/transient.hpp"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -57,6 +64,113 @@ turbofan::CycleSetup read_setup(const char* path) {
     return setup;
 }
 
+constexpr double time_step = 0.01;
+constexpr std::size_t time_steps = 100;
+constexpr double step_time = 0.1;
+
+std::vector<turbofan::TransientSample> run_fuel_step(const turbofan::CycleSetup& setup,
+                                                      const turbofan::MapDataset& maps) {
+    return turbofan::simulate_transient(setup, maps, time_step, time_steps,
+        [&](double time, const turbofan::CycleResult&) {
+            auto point = setup.point;
+            if (time >= step_time) {
+                point.base.fuel_flow *= 1.006;
+            }
+            return point;
+        });
+}
+
+turbofan::ControllerFeedback feedback(const turbofan::CycleResult& result) {
+    return {result.lp_speed_rpm,
+            result.stations[7].total.pressure / result.stations[0].total.pressure};
+}
+
+std::vector<turbofan::TransientSample> run_reference_controller() {
+    const auto setup = turbofan::synthetic_setup(preset("design"));
+    const auto& point = setup.point;
+    const double fuel = point.base.fuel_flow;
+    const double throat = point.base.throat_area;
+    const double ratio = point.exit_area / throat;
+    turbofan::ControllerCommands actual{fuel, point.augmentor_fuel_flow, throat, point.exit_area};
+    const turbofan::ActuatorConfig actuators{{0.04, 0.20 * fuel}, {0.08, 0.20 * fuel},
+                                             {0.06, 0.15 * throat}, ratio};
+    std::optional<turbofan::ReferenceController> controller;
+    return turbofan::simulate_transient(setup, turbofan::synthetic_map_dataset(), time_step, time_steps,
+        [&](double time, const turbofan::CycleResult& result) {
+            const auto measured = feedback(result);
+            if (!controller) {
+                const double rpm = measured.lp_speed_rpm;
+                const double pr = measured.pressure_ratio;
+                controller.emplace(turbofan::ControllerConfig{
+                    {{0.0, 0.99 * rpm, 0.995 * pr, 0.0},
+                     {0.5, rpm, pr, 0.0},
+                     {1.0, 1.01 * rpm, 1.005 * pr, 0.0}},
+                    {1.2e-5, 2.5e-5, 0.90 * fuel, 1.10 * fuel},
+                    {0.05 * throat, 0.10 * throat, 0.97 * throat, 1.03 * throat},
+                    ratio,
+                }, 0.5, measured, actual);
+            }
+
+            const double throttle = time < step_time ? 0.5 : 0.75;
+            const auto requested = controller->step(throttle, measured, time_step);
+            actual = turbofan::advance_actuators(actual, requested.commands, actuators, time_step);
+            auto applied = point;
+            applied.base.fuel_flow = actual.main_fuel_flow;
+            applied.augmentor_fuel_flow = actual.augmentor_fuel_flow;
+            applied.base.throat_area = actual.throat_area;
+            applied.exit_area = actual.exit_area;
+            return applied;
+        });
+}
+
+void write_transient(std::string_view mode, std::string_view variant,
+                     const std::vector<turbofan::TransientSample>& history) {
+    std::cout << std::setprecision(12)
+              << "case,variant,time_s,station,pt_pa,tt_k,flow_kg_s,h_total_j_kg,fuel_air_ratio,"
+                 "lp_rpm,hp_rpm,lp_net_power_w,hp_net_power_w,main_fuel_kg_s,augmentor_fuel_kg_s,"
+                 "throat_m2,exit_m2\n";
+    for (const auto& sample : history) {
+        for (const auto& station : sample.result.stations) {
+            const auto& result = sample.result;
+            std::cout << mode << ',' << variant << ',' << sample.time << ',' << station.name << ','
+                      << station.total.pressure << ',' << station.total.temperature << ','
+                      << station.total.mass_flow << ',' << turbofan::cp * station.total.temperature
+                      << ',' << station.fuel_air_ratio << ',' << result.lp_speed_rpm << ','
+                      << result.hp_speed_rpm << ',' << result.lp_net_power << ','
+                      << result.hp_net_power << ',' << sample.command.base.fuel_flow << ','
+                      << sample.command.augmentor_fuel_flow << ',' << sample.command.base.throat_area
+                      << ',' << sample.command.exit_area << '\n';
+        }
+    }
+}
+
+void benchmark() {
+    static_cast<void>(run_reference_controller());
+    constexpr int trials = 10;
+    double elapsed = 0.0;
+    double slowest = 0.0;
+    double simulated_seconds = 0.0;
+    for (int i = 0; i < trials; ++i) {
+        const auto start = std::chrono::steady_clock::now();
+        const auto history = run_reference_controller();
+        const auto end = std::chrono::steady_clock::now();
+        const double seconds = std::chrono::duration<double>(end - start).count();
+        elapsed += seconds;
+        slowest = std::max(slowest, seconds);
+        simulated_seconds += history.back().time;
+    }
+    if (!(elapsed > 0.0)) {
+        throw std::runtime_error("Benchmark duration did not exceed timer resolution");
+    }
+    std::cout << std::setprecision(6)
+              << "trials=" << trials << " steps_per_trial=" << time_steps
+              << " step_ms=" << 1000.0 * time_step
+              << " mean_run_ms=" << 1000.0 * elapsed / trials
+              << " slowest_run_ms=" << 1000.0 * slowest
+              << " mean_step_ms=" << 1000.0 * elapsed / (trials * time_steps)
+              << " simulated_seconds_per_wall_second=" << simulated_seconds / elapsed << '\n';
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -64,17 +178,43 @@ int main(int argc, char* argv[]) {
     const bool export_maps = mode == "export-maps" && argc == 2;
     const bool export_case = mode == "export-case" && argc == 3 && is_preset(argv[2]);
     const bool solve_case = mode == "solve-case" && argc == 4;
+    const bool transient = mode == "transient" && (argc == 2 || argc == 4);
+    const bool controlled = mode == "controlled" && argc == 2;
+    const bool time_benchmark = mode == "benchmark" && argc == 2;
     const bool use_external_maps = argc == 4 && std::string_view(argv[2]) == "--maps";
     const bool run_cycle = is_preset(mode) && (argc == 2 || use_external_maps);
-    if (!run_cycle && !export_maps && !export_case && !solve_case) {
+    if (!run_cycle && !export_maps && !export_case && !solve_case &&
+        !transient && !controlled && !time_benchmark) {
         std::cerr << "Usage: turbofan-cli design|off-design|wet [--maps FILE]\n"
                      "       turbofan-cli export-maps\n"
                      "       turbofan-cli export-case design|off-design|wet\n"
-                     "       turbofan-cli solve-case CASE MAPS\n";
+                     "       turbofan-cli solve-case CASE MAPS\n"
+                     "       turbofan-cli transient [CASE MAPS]\n"
+                     "       turbofan-cli controlled|benchmark\n";
         return 2;
     }
 
     try {
+        if (time_benchmark) {
+            benchmark();
+            return 0;
+        }
+        if (controlled) {
+            write_transient(mode, turbofan::synthetic_map_dataset().variant, run_reference_controller());
+            return 0;
+        }
+        if (transient) {
+            if (argc == 4) {
+                const auto setup = read_setup(argv[2]);
+                const auto maps = read_maps(argv[3]);
+                write_transient(mode, setup.engine.variant, run_fuel_step(setup, maps));
+            } else {
+                const auto setup = turbofan::synthetic_setup(preset("design"));
+                write_transient(mode, setup.engine.variant,
+                                run_fuel_step(setup, turbofan::synthetic_map_dataset()));
+            }
+            return 0;
+        }
         if (export_maps) {
             turbofan::write_map_dataset(std::cout, turbofan::synthetic_map_dataset());
             return 0;

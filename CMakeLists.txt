@@ -9,6 +9,9 @@ add_library(turbofan
     src/engine_config.cpp
     src/matching.cpp
     src/cycle.cpp
+    src/transient.cpp
+    src/controller.cpp
+    src/actuator.cpp
 )
 target_include_directories(turbofan PUBLIC include)
 target_compile_features(turbofan PUBLIC cxx_std_20)
@@ -38,6 +41,20 @@ if(BUILD_TESTING)
     add_executable(engine-config-test tests/engine_config_test.cpp)
     target_link_libraries(engine-config-test PRIVATE turbofan)
     add_test(NAME engine-config COMMAND engine-config-test)
+
+    add_executable(transient-test tests/transient_test.cpp)
+    target_link_libraries(transient-test PRIVATE turbofan)
+    add_test(NAME transient COMMAND transient-test)
+
+    add_executable(controller-test tests/controller_test.cpp)
+    target_link_libraries(controller-test PRIVATE turbofan)
+    add_test(NAME controller COMMAND controller-test)
+
+    add_executable(actuator-test tests/actuator_test.cpp)
+    target_link_libraries(actuator-test PRIVATE turbofan)
+    add_test(NAME actuator COMMAND actuator-test)
+
+    add_test(NAME controlled-cycle COMMAND turbofan-cli controlled)
 
     add_executable(cycle-test tests/cycle_test.cpp)
     target_link_libraries(cycle-test PRIVATE turbofan)
