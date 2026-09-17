@@ -1,8 +1,11 @@
 #include "turbofan/transient.hpp"
 
+#include "turbofan/control_profile.hpp"
+
 #include <cmath>
 #include <numbers>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -100,6 +103,36 @@ std::vector<TransientSample> simulate_transient(
         history.push_back({next_time, point, std::move(accepted)});
     }
     return history;
+}
+
+std::vector<TransientSample> simulate_controlled(
+    const CycleSetup& setup, const MapDataset& maps, const ControlProfile& profile) {
+    validate_control_profile(profile);
+    const auto& point = setup.point;
+    ControllerCommands actual{point.base.fuel_flow, point.augmentor_fuel_flow,
+                              point.base.throat_area, point.exit_area};
+    std::optional<ReferenceController> controller;
+    return simulate_transient(setup, maps, profile.step_seconds, profile.steps,
+        [&](double time, const CycleResult& result) {
+            const ControllerFeedback measured{
+                result.lp_speed_rpm,
+                result.stations[7].total.pressure / result.stations[0].total.pressure,
+            };
+            if (!controller) {
+                controller.emplace(profile.controller, profile.trim_throttle, measured, actual);
+            }
+
+            const auto requested = controller->step(
+                throttle_at(profile, time), measured, profile.step_seconds);
+            actual = advance_actuators(actual, requested.commands, profile.actuators,
+                                       profile.step_seconds);
+            auto applied = point;
+            applied.base.fuel_flow = actual.main_fuel_flow;
+            applied.augmentor_fuel_flow = actual.augmentor_fuel_flow;
+            applied.base.throat_area = actual.throat_area;
+            applied.exit_area = actual.exit_area;
+            return applied;
+        });
 }
 
 }  // namespace turbofan

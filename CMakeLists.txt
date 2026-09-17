@@ -11,6 +11,7 @@ add_library(turbofan
     src/cycle.cpp
     src/transient.cpp
     src/controller.cpp
+    src/control_profile.cpp
     src/actuator.cpp
 )
 target_include_directories(turbofan PUBLIC include)
@@ -53,6 +54,10 @@ if(BUILD_TESTING)
     add_executable(actuator-test tests/actuator_test.cpp)
     target_link_libraries(actuator-test PRIVATE turbofan)
     add_test(NAME actuator COMMAND actuator-test)
+
+    add_executable(control-profile-test tests/control_profile_test.cpp)
+    target_link_libraries(control-profile-test PRIVATE turbofan)
+    add_test(NAME control-profile COMMAND control-profile-test)
 
     add_test(NAME controlled-cycle COMMAND turbofan-cli controlled)
 

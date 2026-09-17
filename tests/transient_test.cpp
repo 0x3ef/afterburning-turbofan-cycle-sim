@@ -1,5 +1,7 @@
 #include "turbofan/transient.hpp"
 
+#include "turbofan/control_profile.hpp"
+
 #include <cmath>
 #include <exception>
 #include <iostream>
@@ -95,6 +97,47 @@ void test_disturbance_and_refinement() {
             "Time step refinement must improve the solution");
 }
 
+void test_wet_control_profile() {
+    const auto setup = turbofan::synthetic_setup(turbofan::synthetic_wet_case());
+    const auto& maps = turbofan::synthetic_map_dataset();
+    const auto trim = turbofan::solve_steady(setup.point, setup.engine, maps, setup.seed);
+    require(trim.converged, "The wet fixture must have a steady trim");
+    const double pressure_ratio =
+        trim.stations[7].total.pressure / trim.stations.front().total.pressure;
+    const double rpm = trim.lp_speed_rpm;
+    const double reheat = setup.point.augmentor_fuel_flow;
+    const double fuel = setup.point.base.fuel_flow;
+    const double area = setup.point.base.throat_area;
+    const double ratio = setup.point.exit_area / area;
+    turbofan::ControlProfile profile{};
+    profile.controller.schedule = {
+        {0.0, rpm, pressure_ratio, reheat},
+        {0.5, rpm, pressure_ratio, reheat},
+        {1.0, rpm, pressure_ratio, reheat + 0.02},
+    };
+    profile.controller.fuel = {1e-5, 2e-5, 0.98 * fuel, 1.02 * fuel};
+    profile.controller.nozzle = {0.01 * area, 0.02 * area, 0.99 * area, 1.01 * area};
+    profile.controller.exit_to_throat_ratio = ratio;
+    profile.actuators = {{0.04, 0.20}, {0.08, 0.10}, {0.06, 0.05}, ratio};
+    profile.trim_throttle = 0.5;
+    profile.step_seconds = 0.01;
+    profile.steps = 20;
+    profile.demand = {{0.0, 0.5}, {0.05, 0.75}};
+    const auto history = turbofan::simulate_controlled(setup, maps, profile);
+    require(history.size() == 21, "The control profile must determine the simulation horizon");
+    require(std::abs(history[5].command.augmentor_fuel_flow - reheat) < 1e-12,
+            "Trim reheat must hold until demand changes");
+    require(history[6].command.augmentor_fuel_flow > reheat &&
+                history[6].command.augmentor_fuel_flow < reheat + 0.01,
+            "Achieved reheat must ramp after the demand step");
+    require(history.back().result.stations.back().total.temperature >
+                history.front().result.stations.back().total.temperature,
+            "The additional fuel must raise nozzle inlet total temperature");
+    for (const auto& sample : history) {
+        require_flow_match(sample.result);
+    }
+}
+
 void test_invalid_inputs() {
     auto setup = dry_setup();
     const auto& maps = turbofan::synthetic_map_dataset();
@@ -121,6 +164,7 @@ int main() {
         test_equilibrium();
         test_disturbance_and_refinement();
         test_invalid_inputs();
+        test_wet_control_profile();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
