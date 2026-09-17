@@ -17,6 +17,8 @@
 
 ### PW-100 comparisons from TM 84903
 
+The [reproducible public comparison](pw100-public-comparison.md) implements the inlet recovery lookup and checks the synthetic surrogate against selected reported points.
+
 Start with a dry intermediate-power case from the publication, once enough of its boundary and actuator data can be recovered. Fig. 6 is a candidate source for the inlet recovery curve used by this deck. Record it as an airframe/inlet assumption for that comparison and confirm the plotted correction convention. Extract the comparison curves by figure, power regime, altitude, test article and series. Fig. 14 only covers a specified maximum-power comparison at 40,000 ft. The paper describes slow maneuvers as effectively steady, so the curves are suitable for quasi-steady checks.
 
 | Output | Figures and published observations | Validation handling |

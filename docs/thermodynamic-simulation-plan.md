@@ -1,6 +1,6 @@
 # Thermodynamic simulation plan
 
-**Status:** Steady [dry](dry-cycle.md) and [lumped wet](wet-cycle.md) matching, [component map loading](component-maps.md), [configured engine cases](engine-cases.md), and [synthetic transient control](transient-simulation.md) are implemented. The PW-100 calibration remains a separate data task.
+**Status:** Steady [dry](dry-cycle.md) and [lumped wet](wet-cycle.md) matching, [component map loading](component-maps.md), [configured engine cases](engine-cases.md), and [synthetic transient control](transient-simulation.md) are implemented. A [public PW-100 comparison](pw100-public-comparison.md) reproduces a published inlet boundary and quantifies the gap to limited aggregate observations. Variant calibration remains a separate data task.
 
 **Target:** An offline C++20 simulator for the station-by-station thermodynamic states of a twin-spool, mixed-flow, afterburning turbofan. The first reference configuration is the F100-PW-100 DEEC test engine described by Myers. The F100 EMD/PW-1128 is a separate configuration and a secondary source of qualitative behavior.
 

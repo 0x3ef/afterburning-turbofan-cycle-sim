@@ -2,6 +2,8 @@
 #include "turbofan/cycle.hpp"
 #include "turbofan/transient.hpp"
 
+#include "public_comparison.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -192,12 +194,13 @@ int main(int argc, char* argv[]) {
     const bool solve_case = mode == "solve-case" && argc == 4;
     const bool transient = mode == "transient" && (argc == 2 || argc == 4);
     const bool controlled = mode == "controlled" && (argc == 2 || argc == 5);
+    const bool compare_pw100 = mode == "compare-pw100" && argc == 2;
     const bool export_control = mode == "export-control" && argc == 2;
     const bool time_benchmark = mode == "benchmark" && (argc == 2 || argc == 5);
     const bool use_external_maps = argc == 4 && std::string_view(argv[2]) == "--maps";
     const bool run_cycle = is_preset(mode) && (argc == 2 || use_external_maps);
     if (!run_cycle && !export_maps && !export_case && !solve_case &&
-        !transient && !controlled && !export_control && !time_benchmark) {
+        !transient && !controlled && !export_control && !time_benchmark && !compare_pw100) {
         std::cerr << "Usage: turbofan-cli design|off-design|wet [--maps FILE]\n"
                      "       turbofan-cli export-maps\n"
                      "       turbofan-cli export-case design|off-design|wet\n"
@@ -205,11 +208,16 @@ int main(int argc, char* argv[]) {
                      "       turbofan-cli transient [CASE MAPS]\n"
                      "       turbofan-cli controlled [CASE MAPS PROFILE]\n"
                      "       turbofan-cli export-control\n"
-                     "       turbofan-cli benchmark [CASE MAPS PROFILE]\n";
+                     "       turbofan-cli benchmark [CASE MAPS PROFILE]\n"
+                     "       turbofan-cli compare-pw100\n";
         return 2;
     }
 
     try {
+        if (compare_pw100) {
+            turbofan::write_tm84903_comparison(std::cout);
+            return 0;
+        }
         if (time_benchmark) {
             if (argc == 5) {
                 const auto setup = read_setup(argv[2]);

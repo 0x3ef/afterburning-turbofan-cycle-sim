@@ -7,6 +7,7 @@ add_library(turbofan
     src/performance_map.cpp
     src/map_dataset.cpp
     src/engine_config.cpp
+    src/reference_conditions.cpp
     src/matching.cpp
     src/cycle.cpp
     src/transient.cpp
@@ -18,7 +19,7 @@ target_include_directories(turbofan PUBLIC include)
 target_compile_features(turbofan PUBLIC cxx_std_20)
 set_target_properties(turbofan PROPERTIES CXX_EXTENSIONS OFF)
 
-add_executable(turbofan-cli src/main.cpp)
+add_executable(turbofan-cli src/main.cpp src/public_comparison.cpp)
 target_link_libraries(turbofan-cli PRIVATE turbofan)
 
 include(CTest)
@@ -60,6 +61,13 @@ if(BUILD_TESTING)
     add_test(NAME control-profile COMMAND control-profile-test)
 
     add_test(NAME controlled-cycle COMMAND turbofan-cli controlled)
+
+    add_executable(reference-conditions-test tests/reference_conditions_test.cpp)
+    target_link_libraries(reference-conditions-test PRIVATE turbofan)
+    add_test(NAME reference-conditions COMMAND reference-conditions-test)
+
+    add_test(NAME pw100-public-comparison COMMAND turbofan-cli compare-pw100)
+    set_tests_properties(pw100-public-comparison PROPERTIES PASS_REGULAR_EXPRESSION "synthetic-similarity")
 
     add_executable(cycle-test tests/cycle_test.cpp)
     target_link_libraries(cycle-test PRIVATE turbofan)
