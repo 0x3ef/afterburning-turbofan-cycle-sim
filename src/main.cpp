@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <exception>
 #include <fstream>
 #include <iomanip>
@@ -90,10 +91,11 @@ turbofan::ControlProfile reference_profile(const turbofan::CycleSetup& setup,
     const double rpm = trim.lp_speed_rpm;
     const double pr = trim.stations[7].total.pressure / trim.stations[0].total.pressure;
     const double ratio = point.exit_area / throat;
+    const double reheat = point.augmentor_fuel_flow;
     return {
-        {{{0.0, 0.99 * rpm, 0.995 * pr, 0.0},
-          {0.5, rpm, pr, 0.0},
-          {1.0, 1.01 * rpm, 1.005 * pr, 0.0}},
+        {{{0.0, 0.99 * rpm, 0.995 * pr, reheat},
+          {0.5, rpm, pr, reheat},
+          {1.0, 1.01 * rpm, 1.005 * pr, reheat > 0.0 ? reheat + 0.02 : 0.0}},
          {1.2e-5, 2.5e-5, 0.90 * fuel, 1.10 * fuel},
          {0.05 * throat, 0.10 * throat, 0.97 * throat, 1.03 * throat},
          ratio},
@@ -131,33 +133,53 @@ void write_transient(std::string_view mode, std::string_view variant,
     }
 }
 
-void benchmark() {
-    const auto setup = turbofan::synthetic_setup(preset("design"));
-    const auto& maps = turbofan::synthetic_map_dataset();
-    const auto profile = reference_profile(setup, maps);
+void benchmark(std::string_view workload, const turbofan::CycleSetup& setup,
+               const turbofan::MapDataset& maps, const turbofan::ControlProfile& profile) {
     static_cast<void>(turbofan::simulate_controlled(setup, maps, profile));
     constexpr int trials = 10;
     double elapsed = 0.0;
     double slowest = 0.0;
     double simulated_seconds = 0.0;
+    double initialization = 0.0;
+    std::vector<double> step_times;
+    turbofan::TransientTiming timing;
     for (int i = 0; i < trials; ++i) {
         const auto start = std::chrono::steady_clock::now();
-        const auto history = turbofan::simulate_controlled(setup, maps, profile);
+        const auto history = turbofan::simulate_controlled(setup, maps, profile, &timing);
         const auto end = std::chrono::steady_clock::now();
+        if (timing.step_seconds.size() != profile.steps) {
+            throw std::runtime_error("Benchmark did not observe every accepted step");
+        }
         const double seconds = std::chrono::duration<double>(end - start).count();
         elapsed += seconds;
         slowest = std::max(slowest, seconds);
         simulated_seconds += history.back().time;
+        initialization += timing.initialization_seconds;
+        step_times.insert(step_times.end(), timing.step_seconds.begin(), timing.step_seconds.end());
     }
     if (!(elapsed > 0.0)) {
         throw std::runtime_error("Benchmark duration did not exceed timer resolution");
     }
+    std::sort(step_times.begin(), step_times.end());
+    const auto percentile_ms = [&](double fraction) {
+        const auto rank = static_cast<std::size_t>(
+            std::ceil(fraction * static_cast<double>(step_times.size())));
+        return 1000.0 * step_times.at(rank - 1);
+    };
+    const auto first_miss = std::upper_bound(step_times.begin(), step_times.end(), profile.step_seconds);
     std::cout << std::setprecision(6)
-              << "trials=" << trials << " steps_per_trial=" << profile.steps
+              << "workload=" << workload
+              << " trials=" << trials << " steps_per_trial=" << profile.steps
+              << " step_samples=" << step_times.size()
               << " step_ms=" << 1000.0 * profile.step_seconds
               << " mean_run_ms=" << 1000.0 * elapsed / trials
               << " slowest_run_ms=" << 1000.0 * slowest
-              << " mean_step_ms=" << 1000.0 * elapsed / (trials * static_cast<double>(profile.steps))
+              << " mean_initialization_ms=" << 1000.0 * initialization / trials
+              << " p50_step_ms=" << percentile_ms(0.50)
+              << " p95_step_ms=" << percentile_ms(0.95)
+              << " p99_step_ms=" << percentile_ms(0.99)
+              << " max_step_ms=" << 1000.0 * step_times.back()
+              << " deadline_misses=" << (step_times.end() - first_miss)
               << " simulated_seconds_per_wall_second=" << simulated_seconds / elapsed << '\n';
 }
 
@@ -171,7 +193,7 @@ int main(int argc, char* argv[]) {
     const bool transient = mode == "transient" && (argc == 2 || argc == 4);
     const bool controlled = mode == "controlled" && (argc == 2 || argc == 5);
     const bool export_control = mode == "export-control" && argc == 2;
-    const bool time_benchmark = mode == "benchmark" && argc == 2;
+    const bool time_benchmark = mode == "benchmark" && (argc == 2 || argc == 5);
     const bool use_external_maps = argc == 4 && std::string_view(argv[2]) == "--maps";
     const bool run_cycle = is_preset(mode) && (argc == 2 || use_external_maps);
     if (!run_cycle && !export_maps && !export_case && !solve_case &&
@@ -182,13 +204,24 @@ int main(int argc, char* argv[]) {
                      "       turbofan-cli solve-case CASE MAPS\n"
                      "       turbofan-cli transient [CASE MAPS]\n"
                      "       turbofan-cli controlled [CASE MAPS PROFILE]\n"
-                     "       turbofan-cli export-control|benchmark\n";
+                     "       turbofan-cli export-control\n"
+                     "       turbofan-cli benchmark [CASE MAPS PROFILE]\n";
         return 2;
     }
 
     try {
         if (time_benchmark) {
-            benchmark();
+            if (argc == 5) {
+                const auto setup = read_setup(argv[2]);
+                const auto maps = read_maps(argv[3]);
+                benchmark("configured", setup, maps, read_profile(argv[4]));
+            } else {
+                const auto& maps = turbofan::synthetic_map_dataset();
+                const auto dry = turbofan::synthetic_setup(preset("design"));
+                const auto wet = turbofan::synthetic_setup(preset("wet"));
+                benchmark("synthetic-dry", dry, maps, reference_profile(dry, maps));
+                benchmark("synthetic-wet", wet, maps, reference_profile(wet, maps));
+            }
             return 0;
         }
         if (export_control) {

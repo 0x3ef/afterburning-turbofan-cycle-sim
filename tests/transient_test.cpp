@@ -11,6 +11,7 @@ namespace {
 
 using turbofan::CycleResult;
 using turbofan::CycleSetup;
+using turbofan::TransientTiming;
 using turbofan::WetCase;
 
 void require(bool condition, const char* message) {
@@ -49,12 +50,24 @@ void require_flow_match(const CycleResult& result) {
             "The flow solve must return the accepted shaft speeds");
 }
 
+void require_timing(const TransientTiming& timing, std::size_t steps) {
+    require(std::isfinite(timing.initialization_seconds) && timing.initialization_seconds >= 0.0,
+            "Elapsed initialization time must be finite and nonnegative");
+    require(timing.step_seconds.size() == steps,
+            "Each accepted integration step must have exactly one elapsed time");
+    for (const double duration : timing.step_seconds) {
+        require(std::isfinite(duration) && duration >= 0.0,
+                "Elapsed step time must be finite and nonnegative");
+    }
+}
+
 void test_equilibrium() {
     const auto setup = dry_setup();
     const auto& maps = turbofan::synthetic_map_dataset();
     constexpr double step = 0.02;
     constexpr std::size_t steps = 12;
     std::size_t calls = 0;
+    TransientTiming timing{-1.0, {-1.0, -1.0}};
     const auto history = turbofan::simulate_transient(setup, maps, step, steps,
         [&](double time, const CycleResult& previous) {
             require(time == static_cast<double>(calls) * step,
@@ -62,7 +75,8 @@ void test_equilibrium() {
             require_flow_match(previous);
             ++calls;
             return setup.point;
-        });
+        }, &timing);
+    require_timing(timing, steps);
     require(calls == steps && history.size() == steps + 1 && history.front().time == 0.0,
             "History and command callback must match the requested grid");
     require(history.back().time == static_cast<double>(steps) * step,
@@ -123,7 +137,9 @@ void test_wet_control_profile() {
     profile.step_seconds = 0.01;
     profile.steps = 20;
     profile.demand = {{0.0, 0.5}, {0.05, 0.75}};
-    const auto history = turbofan::simulate_controlled(setup, maps, profile);
+    TransientTiming timing;
+    const auto history = turbofan::simulate_controlled(setup, maps, profile, &timing);
+    require_timing(timing, profile.steps);
     require(history.size() == 21, "The control profile must determine the simulation horizon");
     require(std::abs(history[5].command.augmentor_fuel_flow - reheat) < 1e-12,
             "Trim reheat must hold until demand changes");
@@ -157,6 +173,38 @@ void test_invalid_inputs() {
         "Zero inertia must be rejected");
 }
 
+void test_timing_failure_preserves_completed_steps() {
+    const auto setup = dry_setup();
+    const auto& maps = turbofan::synthetic_map_dataset();
+    TransientTiming timing{-1.0, {-1.0, -1.0}};
+    std::size_t calls = 0;
+    const auto failing_command = [&](double, const CycleResult&) {
+        if (++calls == 2) {
+            throw std::runtime_error("Test command failure");
+        }
+        return setup.point;
+    };
+    expect_error<std::runtime_error>(
+        [&] { turbofan::simulate_transient(setup, maps, 0.02, 5, failing_command, &timing); },
+        "A failed command must stop the simulation");
+    require(calls == 2, "Only the first command should have completed");
+    require_timing(timing, 1);
+
+    const auto command = [&](double, const CycleResult&) { return setup.point; };
+    expect_error<std::invalid_argument>(
+        [&] { turbofan::simulate_transient(setup, maps, 0.0, 5, command, &timing); },
+        "An invalid time grid must be rejected");
+    require(timing.initialization_seconds == 0.0 && timing.step_seconds.empty(),
+            "Starting a new simulation must clear prior timing results");
+
+    timing = {-1.0, {-1.0}};
+    expect_error<std::invalid_argument>(
+        [&] { turbofan::simulate_controlled(setup, maps, turbofan::ControlProfile{}, &timing); },
+        "An invalid control profile must be rejected");
+    require(timing.initialization_seconds == 0.0 && timing.step_seconds.empty(),
+            "Starting a controlled simulation must clear prior timing results");
+}
+
 }  // namespace
 
 int main() {
@@ -165,6 +213,7 @@ int main() {
         test_disturbance_and_refinement();
         test_invalid_inputs();
         test_wet_control_profile();
+        test_timing_failure_preserves_completed_steps();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

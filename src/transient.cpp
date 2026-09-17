@@ -2,6 +2,7 @@
 
 #include "turbofan/control_profile.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <numbers>
 #include <numeric>
@@ -17,6 +18,19 @@ struct Speeds {
     double lp;
     double hp;
 };
+
+using Clock = std::chrono::steady_clock;
+
+void reset_timing(TransientTiming* timing) {
+    if (timing) {
+        timing->initialization_seconds = 0.0;
+        timing->step_seconds.clear();
+    }
+}
+
+double elapsed_seconds(Clock::time_point started) {
+    return std::chrono::duration<double>(Clock::now() - started).count();
+}
 
 bool positive(double value) {
     return std::isfinite(value) && value > 0.0;
@@ -59,7 +73,8 @@ CycleResult require_match(CycleResult result, double time, const char* stage) {
 
 std::vector<TransientSample> simulate_transient(
     const CycleSetup& setup, const MapDataset& maps, double step_seconds, std::size_t steps,
-    const std::function<WetCase(double, const CycleResult&)>& command) {
+    const std::function<WetCase(double, const CycleResult&)>& command, TransientTiming* timing) {
+    reset_timing(timing);
     std::vector<TransientSample> history;
     if (!positive(step_seconds) || steps == 0 || steps >= history.max_size() ||
         !std::isfinite(static_cast<double>(steps) * step_seconds)) {
@@ -73,11 +88,19 @@ std::vector<TransientSample> simulate_transient(
     }
 
     const EngineConfig& engine = setup.engine;
+    if (timing) {
+        timing->step_seconds.reserve(steps);
+    }
+    const auto initialization_started = timing ? Clock::now() : Clock::time_point{};
     history.reserve(steps + 1);
     history.push_back({0.0, setup.point,
                        require_match(solve_steady(setup.point, engine, maps, setup.seed), 0.0,
                                      "initial steady")});
+    if (timing) {
+        timing->initialization_seconds = elapsed_seconds(initialization_started);
+    }
     for (std::size_t step = 0; step < steps; ++step) {
+        const auto step_started = timing ? Clock::now() : Clock::time_point{};
         const TransientSample& previous = history.back();
         const double time = previous.time;
         const double next_time = static_cast<double>(step + 1) * step_seconds;
@@ -101,12 +124,17 @@ std::vector<TransientSample> simulate_transient(
         CycleResult accepted = require_match(solve_at_speeds(point, engine, maps, correction),
                                              next_time, "accepted state");
         history.push_back({next_time, point, std::move(accepted)});
+        if (timing) {
+            timing->step_seconds.push_back(elapsed_seconds(step_started));
+        }
     }
     return history;
 }
 
 std::vector<TransientSample> simulate_controlled(
-    const CycleSetup& setup, const MapDataset& maps, const ControlProfile& profile) {
+    const CycleSetup& setup, const MapDataset& maps, const ControlProfile& profile,
+    TransientTiming* timing) {
+    reset_timing(timing);
     validate_control_profile(profile);
     const auto& point = setup.point;
     ControllerCommands actual{point.base.fuel_flow, point.augmentor_fuel_flow,
@@ -132,7 +160,7 @@ std::vector<TransientSample> simulate_controlled(
             applied.base.throat_area = actual.throat_area;
             applied.exit_area = actual.exit_area;
             return applied;
-        });
+        }, timing);
 }
 
 }  // namespace turbofan

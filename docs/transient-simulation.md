@@ -30,4 +30,20 @@ Each PI loop initializes from the trim command, limits its output and prevents i
 
 CTest covers steady equilibrium, an imposed fuel step, timestep refinement, fixed-speed flow closure, controller trim and limits, actuator lag and rate limits, and the integrated closed-loop demonstration. A wet control-profile test verifies the augmentor lag and checks matching after a reheat demand change. Command-line verification exported and reloaded the case, maps, and controller, producing an identical closed-loop trajectory.
 
-A Release build in the cloud environment simulated the 100-step closed-loop case in about 22 ms on average over ten timed runs, about 45 simulated seconds per wall-clock second. The benchmark includes initialization and numerical integration and omits CSV serialization. It measures throughput for this workload. The fixed-step implementation provides no deadline or worst-case guarantee on other workloads or hosts.
+The benchmark runs both synthetic dry and wet closed-loop profiles. It reports initialization separately and measures each accepted step from command sampling through the final flow match and history insertion. It reports nearest-rank p50, p95 and p99 latencies, the worst observed step, and the number exceeding the profile's step duration. The benchmark excludes CSV serialization and does not pace itself to wall time.
+
+```sh
+./build/turbofan-cli benchmark
+./build/turbofan-cli benchmark case.csv maps.csv control.csv
+```
+
+In one Release run in the cloud environment, the simulator was pinned to a single logical CPU. The contention run used the same affinity with one additional CPU-bound process. Each row contains 1,000 measured steps with a 10 ms deadline.
+
+| Workload | CPU condition | p95 (ms) | p99 (ms) | Maximum (ms) | Steps over 10 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Dry | Baseline | 0.658 | 1.390 | 2.562 | 0 |
+| Wet | Baseline | 0.619 | 2.031 | 3.316 | 0 |
+| Dry | Competing process | 3.038 | 6.473 | 10.918 | 1 |
+| Wet | Competing process | 4.217 | 5.500 | 10.375 | 1 |
+
+These are host-specific measurements. The observed misses under contention preclude a hard real-time deadline guarantee for this environment.
