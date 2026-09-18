@@ -1,5 +1,7 @@
 # Turbofan analysis notebook
 
+See the [project README](../README.md) for the CLI quick start.
+
 The [analysis notebook](../notebooks/turbofan_analysis.ipynb) runs the C++ simulator, shows its tables and plots next to the commands that produced them, and exports the source CSVs alongside the figures. The committed notebook includes its executed figures for viewing directly. This keeps a case reproducible while you explore inputs or prepare figures for a report.
 
 ## Run on Linux
